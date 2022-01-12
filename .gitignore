@@ -5,7 +5,7 @@ __pycache__
 dist
 
 # vscode stuff
-.vscode
+.vscode/
 
 # Unit test / coverage reports
 htmlcov/
