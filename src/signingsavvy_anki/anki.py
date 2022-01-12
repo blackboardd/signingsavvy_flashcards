@@ -24,10 +24,7 @@ from typing import Any, Literal
 from urllib.request import Request, urlopen
 
 import requests
-from pick import pick
 from signingsavvy import api
-
-VideoQuality = Literal["ld", "sd", "hd"]
 
 base = "http://127.0.0.1"
 ssbase = "https://www.signingsavvy.com"
@@ -65,13 +62,12 @@ class PasswordPromptAction(argparse.Action):
         setattr(args, self.dest, password)
 
 
-parser = argparse.ArgumentParser(description="AnkiConnect and SigningSavvy")
-parser.add_argument("-u", dest="user", type=str, required=False)
-parser.add_argument(
-    "-p", dest="password", action=PasswordPromptAction, type=str, required=False
-)
+p = argparse.ArgumentParser(description="AnkiConnect and SigningSavvy")
+p.add_argument("-u", dest="user", type=str)
+p.add_argument("-p", dest="password", action=PasswordPromptAction, type=str)
+p.add_argument("--hq", dest="hq", type=str, default="hd", help="ld, sd, or hd")
 
-args = parser.parse_args()
+args = p.parse_args()
 
 basicConfig(
     filename="signingsavvy_anki.log",
@@ -107,7 +103,8 @@ dSentences = "nonfiction::asl::sentences"
 
 
 def addNote(options: dict, data: dict, deck: str, front: bool):
-    logging.info(f"Adding {data['type']} note as a {'front' if front else 'back'}...")
+    logging.info(f"Adding {data['type']} note \
+        as a {'front' if front else 'back'}...")
     logging.info(data)
 
     content = data["content"]
@@ -138,18 +135,18 @@ Memory aid: {data["mind"]}
                     "fields": ["Back" if front else "Front"],
                 }
             ],
-        }
+        },
     )
 
     logging.info(res)
 
 
-def fetch(request: str, user: str, pw: str):
+def fetch(request: str):
     try:
-        req = requests.get(request, headers={"user": user, "pass": pw})
-        
+        req = requests.get(request, headers={"user": args.user, "pass": args.password})
+
         # sleep to prevent server overload
-        sleep(5)
+        # sleep(2)
 
         return json.dumps(req.json())
     except:
@@ -160,29 +157,29 @@ def parse(data: str):
     return json.loads(data, object_hook=lambda d: SimpleNamespace(**d))
 
 
-def addAllWords(options, hq: VideoQuality, user: str, pw: str):
+def addAllWords(options):
     logging.info("Adding all words.")
 
     initialWords = invoke(action="getTags")
 
     for _ in list("abcdefghijklmnopqrstuvwxyz"):
         results = parse(
-            fetch(f"{base}:{port}/browse/{_}", user, pw)
+            fetch(f"{base}:{port}/browse/{_}")
         ).signs.search_results
 
         for _ in results:
             id = re.findall(r"\d+$", _.uri)[0]
             if f"asl::word-id::{id}" in initialWords:
                 continue
-            
-            info = parse(fetch(f"{base}:{port}/sign/{_.uri}", user, pw))
+
+            info = parse(fetch(f"{base}:{port}/sign/{_.uri}"))
 
             for i in range(len(info.variants) - 1):
                 variant = info.variants[i]
                 usage = ""
 
                 for _ in variant.usage:
-                    try: 
+                    try:
                         usage += f"English: {_.english}<br />"
                         usage += f"ASL: {_.asl}<br /><br />"
                     except:
@@ -195,24 +192,24 @@ def addAllWords(options, hq: VideoQuality, user: str, pw: str):
                     "extra": f"Description: {variant.desc}<br /><br />Type: {variant.type}<br /><br />Usage:<br />{usage}",
                     "mind": variant.aid,
                     "type": "word",
-                    "video": f"{ssbase}/media/mp4-{hq}/{variant.video}",
+                    "video": f"{ssbase}/media/mp4-{args.hq}/{variant.video}",
                 }
 
                 addNote(options, word, dWords, front=True)
                 addNote(options, word, dWords, front=False)
 
 
-def addAllSentences(options, hq: VideoQuality, user: str, pw: str):
+def addAllSentences(options):
     logging.info("Adding all sentences.")
 
-    categories = parse(fetch(f"{base}:{port}/sentences"), user, pw).categories
+    categories = parse(fetch(f"{base}:{port}/sentences")).categories
 
     for _ in categories:
-        results = parse(fetch(f"{base}:{port}/sentences/{_}"), user, pw).categories
+        results = parse(fetch(f"{base}:{port}/sentences/{_}")).categories
 
         for result in results:
             uri = result.uri.replace("sentences/", "")
-            info = parse(fetch(f"{base}:{port}/sentence/{uri}", user, pw))
+            info = parse(fetch(f"{base}:{port}/sentence/{uri}"))
             gloss = "<br />"
 
             for _ in info.glossary:
@@ -227,7 +224,7 @@ def addAllSentences(options, hq: VideoQuality, user: str, pw: str):
                 "extra": f"Category: {info.category}<br /><br />ASL: {info.asl}<br /><br />Glossary:<br />{gloss}",
                 "mind": "",
                 "type": "sentence",
-                "video": f"{ssbase}/media/mp4-{hq}/{info.video}",
+                "video": f"{ssbase}/media/mp4-{args.hq}/{info.video}",
             }
 
             addNote(options, sentence, dSentences, front=True)
@@ -270,12 +267,8 @@ def init():
         logging.info("Creating decks...")
         createDecks()
 
-        logging.info("Prompting user for preferred video quality...")
-        hqs = ["hd", "sd", "ld"]
-        option, index = pick(["720p", "540p", "360p"], "=== Pick a video quality ===")
-
-        addAllWords(options(dWords), hqs[index], args.user, args.password)
-        # addAllSentences(options(dSentences), hqs[index], args.user, args.password)
+        addAllWords(options(dWords))
+        # addAllSentences(options(dSentences))
     except urllib.error.URLError:
         logging.error("Connection refused. Is Anki open and Anki Connect installed?")
 
