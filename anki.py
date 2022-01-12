@@ -2,41 +2,38 @@
 
 Establishes a connection to Anki via AnkiConnect and creates cards
 
-"""
+Copyright (c) 2022 Brighten Tompkins
 
-try:
-    import curses
-except ImportError:
-    print("Curses failed to import.")
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+"""
 
 import argparse
 import json
 import logging
 import re
 import threading
-import urllib
+import requests
 from getpass import getpass
 from logging import basicConfig
-from os import path
-from time import sleep
 from types import SimpleNamespace
-from typing import Any, Literal
+from typing import Literal
+from urllib.error import URLError
 from urllib.request import Request, urlopen
-
-import requests
-from pick import pick
 from signingsavvy import api
 
-VideoQuality = Literal["ld", "sd", "hd"]
-
+# Global script variables
+dWords = "nonfiction::asl::words"
+dSentences = "nonfiction::asl::sentences"
 base = "http://127.0.0.1"
 ssbase = "https://www.signingsavvy.com"
 port = "5954"
 
-import argparse
-import getpass
-
-
+# Password prompt from https://stackoverflow.com/questions/27921629
 class PasswordPromptAction(argparse.Action):
     def __init__(
         self,
@@ -61,18 +58,19 @@ class PasswordPromptAction(argparse.Action):
         )
 
     def __call__(self, parser, args, values, option_string=None):
-        password = getpass.getpass()
+        password = getpass()
         setattr(args, self.dest, password)
 
 
-parser = argparse.ArgumentParser(description="AnkiConnect and SigningSavvy")
-parser.add_argument("-u", dest="user", type=str, required=False)
-parser.add_argument(
-    "-p", dest="password", action=PasswordPromptAction, type=str, required=False
-)
+# Set up parsing arguments
+p = argparse.ArgumentParser(description="AnkiConnect and SigningSavvy")
+p.add_argument("-u", dest="user", type=str)
+p.add_argument("-p", dest="password", action=PasswordPromptAction, type=str)
+p.add_argument("--hq", dest="hq", type=str, default="hd", help="ld, sd, or hd")
 
-args = parser.parse_args()
+args = p.parse_args()
 
+# Configure logger 
 basicConfig(
     filename="signingsavvy_anki.log",
     format="[%(asctime)s] {%(pathname)s:%(lineno)d} \
@@ -83,11 +81,33 @@ basicConfig(
 )
 
 
-def request(action, **params):
+def request(action: str, **params: dict):
+    """Function to perform a request to Anki-Connect.
+
+    Args:
+        action (str): The action to perform.
+        **params (dict): Parameters to append to the request.
+
+    Returns:
+        dict: Dictionary containing a full request.
+
+    """
+
     return {"action": action, "params": params, "version": 6}
 
 
 def invoke(action, **params):
+    """Function to make an invocation to Anki-Connect.
+
+    Args:
+        action (str): The action to perform.
+        **params (dict): Parameters to append to the request.
+
+    Returns:
+        str: Data from the invocation.
+
+    """
+
     base = "http://localhost:8765"
     req = json.dumps(request(action, **params)).encode("utf-8")
     _open = urlopen(Request(base, req))
@@ -102,12 +122,19 @@ def invoke(action, **params):
     return res["result"]
 
 
-dWords = "nonfiction::asl::words"
-dSentences = "nonfiction::asl::sentences"
-
-
 def addNote(options: dict, data: dict, deck: str, front: bool):
-    logging.info(f"Adding {data['type']} note as a {'front' if front else 'back'}...")
+    """Function to add a note to Anki.
+
+    Args:
+        options (dict): A dictionary of options to use for the note.
+        data (dict): The data that holds the information to be used with the note.
+        deck (str): The deck that the note is to be inserted into.
+        front (bool): Whether or not the note is a front card or back card.
+
+    """
+
+    logging.info(f"Adding {data['type']} note \
+        as a {'front' if front else 'back'}...")
     logging.info(data)
 
     content = data["content"]
@@ -138,18 +165,28 @@ Memory aid: {data["mind"]}
                     "fields": ["Back" if front else "Front"],
                 }
             ],
-        }
+        },
     )
 
     logging.info(res)
 
 
-def fetch(request: str, user: str, pw: str):
+def fetch(request: str):
+    """Function that fetches a request from the signingsavvy site.
+
+    Args:
+        request (str): The request to be made.
+    
+    Returns:
+        str: String json version of the request that was made.
+
+    """
+
     try:
-        req = requests.get(request, headers={"user": user, "pass": pw})
-        
+        req = requests.get(request, headers={"user": args.user, "pass": args.password})
+
         # sleep to prevent server overload
-        sleep(5)
+        # sleep(2)
 
         return json.dumps(req.json())
     except:
@@ -157,32 +194,49 @@ def fetch(request: str, user: str, pw: str):
 
 
 def parse(data: str):
+    """Function that parses a given string json data into a python object.
+
+    Args:
+        data (str): The data to be parsed, a json string.
+    
+    Returns:
+        SimpleNamespace: An object whose properties can be selected using dot. 
+
+    """
+
     return json.loads(data, object_hook=lambda d: SimpleNamespace(**d))
 
 
-def addAllWords(options, hq: VideoQuality, user: str, pw: str):
+def addAllWords(options):
+    """Function that adds all the words from signingsavvy to Anki.
+
+    Args:
+        options (dict): A dictionary of options to use for the note.
+
+    """
+
     logging.info("Adding all words.")
 
     initialWords = invoke(action="getTags")
 
     for _ in list("abcdefghijklmnopqrstuvwxyz"):
         results = parse(
-            fetch(f"{base}:{port}/browse/{_}", user, pw)
+            fetch(f"{base}:{port}/browse/{_}")
         ).signs.search_results
 
         for _ in results:
             id = re.findall(r"\d+$", _.uri)[0]
             if f"asl::word-id::{id}" in initialWords:
                 continue
-            
-            info = parse(fetch(f"{base}:{port}/sign/{_.uri}", user, pw))
+
+            info = parse(fetch(f"{base}:{port}/sign/{_.uri}"))
 
             for i in range(len(info.variants) - 1):
                 variant = info.variants[i]
                 usage = ""
 
                 for _ in variant.usage:
-                    try: 
+                    try:
                         usage += f"English: {_.english}<br />"
                         usage += f"ASL: {_.asl}<br /><br />"
                     except:
@@ -195,24 +249,31 @@ def addAllWords(options, hq: VideoQuality, user: str, pw: str):
                     "extra": f"Description: {variant.desc}<br /><br />Type: {variant.type}<br /><br />Usage:<br />{usage}",
                     "mind": variant.aid,
                     "type": "word",
-                    "video": f"{ssbase}/media/mp4-{hq}/{variant.video}",
+                    "video": f"{ssbase}/media/mp4-{args.hq}/{variant.video}",
                 }
 
                 addNote(options, word, dWords, front=True)
                 addNote(options, word, dWords, front=False)
 
 
-def addAllSentences(options, hq: VideoQuality, user: str, pw: str):
+def addAllSentences(options):
+    """Function that adds all the sentences from signingsavvy to Anki.
+
+    Args:
+        options (dict): A dictionary of options to use for the note.
+
+    """
+
     logging.info("Adding all sentences.")
 
-    categories = parse(fetch(f"{base}:{port}/sentences"), user, pw).categories
+    categories = parse(fetch(f"{base}:{port}/sentences")).categories
 
     for _ in categories:
-        results = parse(fetch(f"{base}:{port}/sentences/{_}"), user, pw).categories
+        results = parse(fetch(f"{base}:{port}/sentences/{_}")).categories
 
         for result in results:
             uri = result.uri.replace("sentences/", "")
-            info = parse(fetch(f"{base}:{port}/sentence/{uri}", user, pw))
+            info = parse(fetch(f"{base}:{port}/sentence/{uri}"))
             gloss = "<br />"
 
             for _ in info.glossary:
@@ -227,7 +288,7 @@ def addAllSentences(options, hq: VideoQuality, user: str, pw: str):
                 "extra": f"Category: {info.category}<br /><br />ASL: {info.asl}<br /><br />Glossary:<br />{gloss}",
                 "mind": "",
                 "type": "sentence",
-                "video": f"{ssbase}/media/mp4-{hq}/{info.video}",
+                "video": f"{ssbase}/media/mp4-{args.hq}/{info.video}",
             }
 
             addNote(options, sentence, dSentences, front=True)
@@ -235,6 +296,8 @@ def addAllSentences(options, hq: VideoQuality, user: str, pw: str):
 
 
 def createDecks():
+    """Function that is used to create the necessary decks for ASL."""
+
     deckNames = invoke("deckNames")
     for deck in [dWords, dSentences]:
         try:
@@ -247,11 +310,10 @@ def createDecks():
             logging.warning(f"Failed to create {deck}. Already exists.")
 
 
-def deleteDecks():
-    invoke("deleteDecks", decks=[dWords, dSentences])
+if __name__ == "__main__":
+    """Performs the initial setup for Anki ASL flashcards."""
 
-
-def init():
+    # Setting up options for Anki-Connect
     def options(deckName):
         return {
             "allowDuplicate": False,
@@ -264,20 +326,14 @@ def init():
         }
 
     try:
+        # Start the local server on a thread
         logging.info("Setting up local server for signingsavvy api...")
         threading.Thread(target=lambda: api.app.run(port=port)).start()
 
         logging.info("Creating decks...")
         createDecks()
 
-        logging.info("Prompting user for preferred video quality...")
-        hqs = ["hd", "sd", "ld"]
-        option, index = pick(["720p", "540p", "360p"], "=== Pick a video quality ===")
-
-        addAllWords(options(dWords), hqs[index], args.user, args.password)
-        # addAllSentences(options(dSentences), hqs[index], args.user, args.password)
-    except urllib.error.URLError:
+        addAllWords(options(dWords))
+        addAllSentences(options(dSentences))
+    except URLError:
         logging.error("Connection refused. Is Anki open and Anki Connect installed?")
-
-
-init()

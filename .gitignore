@@ -4,6 +4,9 @@ __pycache__
 # poetry build files
 dist
 
+# vscode stuff
+.vscode
+
 # Unit test / coverage reports
 htmlcov/
 .tox/
